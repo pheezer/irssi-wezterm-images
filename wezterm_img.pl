@@ -12,7 +12,7 @@ my $SCRIPT_DIR = eval {
     File::Basename::dirname(Cwd::abs_path(__FILE__));
 } || "$ENV{HOME}/github/irssi-wezterm-images";
 
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 our %IRSSI = (
     authors     => 'pduvall',
     name        => 'wezterm_img',
@@ -32,6 +32,11 @@ Irssi::settings_add_int ('wezterm_img', 'wezterm_img_pixel_pct',   20);
 Irssi::settings_add_int ('wezterm_img', 'wezterm_img_max_mb',      10);
 Irssi::settings_add_str ('wezterm_img', 'wezterm_img_channels',    '');
 Irssi::settings_add_str ('wezterm_img', 'wezterm_img_helper_dir',  $SCRIPT_DIR);
+# auto|local|remote|off. auto = local when inside WezTerm, else inactive.
+# Set 'remote' when irssi runs over ssh/mosh and a local watch_remote.sh bridges back.
+Irssi::settings_add_str ('wezterm_img', 'wezterm_img_mode',        'auto');
+# remote mode: file image URLs are appended to. '' => $HOME/.irssi-wezterm-img.queue
+Irssi::settings_add_str ('wezterm_img', 'wezterm_img_queue_file',  '');
 
 # cached viewer pane id + a small LRU of recently-seen URLs (dedupe)
 my $VIEWER_PANE;
@@ -66,14 +71,41 @@ sub extract_image_urls {
     return @urls;
 }
 
-# Does a pane id still exist in this wezterm session?
+# Resolve effective mode. 'auto' => 'local' inside WezTerm, else 'inactive'.
+sub effective_mode {
+    my $m = lc(Irssi::settings_get_str('wezterm_img_mode') || 'auto');
+    return 'off'      if $m eq 'off';
+    return $m         if $m eq 'local' || $m eq 'remote';
+    return $ENV{WEZTERM_PANE} ? 'local' : 'inactive';   # auto
+}
+
+sub queue_file {
+    my $f = Irssi::settings_get_str('wezterm_img_queue_file');
+    $f = "$ENV{HOME}/.irssi-wezterm-img.queue" unless defined $f && $f =~ /\S/;
+    return $f;
+}
+
+# remote mode: append the URL as a line; a local watcher renders it.
+sub enqueue_url {
+    my ($url) = @_;
+    my $f = queue_file();
+    if (open my $fh, '>>', $f) {
+        print $fh $url, "\n";
+        close $fh;
+    }
+}
+
+# Tri-state: 1 = pane present, 0 = genuinely absent, -1 = couldn't tell
+# (wezterm cli list failed or returned junk). Callers must not treat -1 as
+# absent — doing so causes spurious respawns during the brief races around
+# split-pane / send-text.
 sub pane_alive {
     my ($id) = @_;
     return 0 unless defined $id && $id =~ /^\d+$/;
     my $json = `wezterm cli list --format json 2>/dev/null`;
-    return 0 unless $json;
+    return -1 unless defined $json && length $json;
     my $data = eval { JSON::PP::decode_json($json) };
-    return 0 unless ref $data eq 'ARRAY';
+    return -1 unless ref $data eq 'ARRAY';
     for my $p (@$data) {
         return 1 if defined $p->{pane_id} && $p->{pane_id} eq $id;
     }
@@ -86,13 +118,15 @@ sub ensure_viewer {
     my $percent = Irssi::settings_get_int('wezterm_img_pane_percent') || 35;
     my $width   = Irssi::settings_get_int('wezterm_img_width_cells')  || 20;
 
-    return $VIEWER_PANE if defined $VIEWER_PANE && pane_alive($VIEWER_PANE);
+    # keep the cached pane if it's present (1) or we can't tell (-1); only a
+    # definite 0 means it's gone.
+    return $VIEWER_PANE if defined $VIEWER_PANE && pane_alive($VIEWER_PANE) != 0;
 
     my $statef = state_dir() . '/pane';
     if (open my $fh, '<', $statef) {
         my $id = <$fh>; close $fh;
         chomp $id if defined $id;
-        if (defined $id && pane_alive($id)) { return $VIEWER_PANE = $id; }
+        if (defined $id && pane_alive($id) != 0) { return $VIEWER_PANE = $id; }
     }
 
     my $self = $ENV{WEZTERM_PANE};
@@ -144,9 +178,20 @@ sub target_allowed {
 sub handle_text {
     my ($msg, $target) = @_;
     return unless Irssi::settings_get_bool('wezterm_img_enabled');
-    return unless $ENV{WEZTERM_PANE};          # only meaningful inside wezterm
+    my $mode = effective_mode();
+    return if $mode eq 'off' || $mode eq 'inactive';
     return unless target_allowed($target);
     my @urls = extract_image_urls($msg) or return;
+
+    if ($mode eq 'remote') {
+        for my $url (@urls) {
+            next if seen_recently($url);
+            enqueue_url($url);
+        }
+        return;
+    }
+
+    # local
     my $pane = ensure_viewer() or return;
     for my $url (@urls) {
         next if seen_recently($url);
@@ -172,10 +217,16 @@ sub cmd_test {
         Irssi::print('usage: /wezterm_img_test <image-url>');
         return;
     }
-    # bypass dedupe for manual testing
+    # bypass dedupe + channel filter for manual testing
     delete $SEEN_SET{$data};
-    handle_text($data, $witem ? $witem->{name} : undef);
-    Irssi::print("wezterm_img: queued $data");
+    my $mode = effective_mode();
+    if ($mode eq 'off' || $mode eq 'inactive') {
+        Irssi::print("wezterm_img: mode is '$mode' — nothing to do (see /set wezterm_img_mode)");
+        return;
+    }
+    handle_text($data, undef);
+    my $where = $mode eq 'remote' ? 'queued to ' . queue_file() : 'rendering locally';
+    Irssi::print("wezterm_img: $data ($where)");
 }
 
 # make sure the state dir exists at load time
@@ -185,5 +236,15 @@ Irssi::signal_add('message public',  \&on_public);
 Irssi::signal_add('message private', \&on_private);
 Irssi::command_bind('wezterm_img_test', \&cmd_test);
 
-Irssi::print('%G>>%n wezterm_img loaded. '
-    . ($ENV{WEZTERM_PANE} ? 'WezTerm detected.' : '%RNot inside WezTerm — previews disabled.%n'));
+{
+    my $mode = effective_mode();
+    my %msg = (
+        local    => '%Gmode=local%n — rendering previews in a WezTerm side pane.',
+        remote   => '%Gmode=remote%n — queueing image URLs to ' . queue_file()
+                    . ' for a local watcher.',
+        inactive => '%Ymode=auto%n — not inside WezTerm. If irssi is remote (ssh/mosh), '
+                    . 'use %_/set wezterm_img_mode remote%_ and run watch_remote.sh locally.',
+        off      => '%Kmode=off%n — disabled.',
+    );
+    Irssi::print("%G>>%n wezterm_img $VERSION loaded. " . ($msg{$mode} || ''));
+}

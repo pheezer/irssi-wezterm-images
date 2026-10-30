@@ -113,16 +113,56 @@ Change live with `/set <name> <value>`:
 | `wezterm_img_max_mb`        | `10`    | Max download size; larger images are skipped.        |
 | `wezterm_img_channels`      | *(all)* | Space-separated channels/nicks to limit to.          |
 | `wezterm_img_helper_dir`    | *(auto)*| Where `render_image.sh` / `viewer.sh` live.          |
+| `wezterm_img_mode`          | `auto`  | `auto`/`local`/`remote`/`off` — see Running remotely. |
+| `wezterm_img_queue_file`    | *(auto)*| Remote mode: file image URLs are appended to.        |
 
 The defaults are a "medium" style — moderate fade, visible chunky pixels. For a
 heavier/retro look: `/set wezterm_img_pixel_pct 12` and
 `/set wezterm_img_colorize_pct 30`.
+
+## Running irssi remotely (ssh / mosh / tmux)
+
+By default (`wezterm_img_mode auto`) the script activates only when it sees
+`$WEZTERM_PANE`. When you run irssi on a **remote** host over ssh/mosh, that
+variable isn't set there, and the host can't reach your local WezTerm anyway:
+`wezterm cli` talks to a unix socket on your Mac, and mosh does not forward
+image escape sequences. So the preview can't be produced remotely.
+
+Instead, split detection (remote) from rendering (local) with a small bridge:
+
+1. **On the remote host**, in irssi: `/set wezterm_img_mode remote`. The script
+   now just appends detected image URLs to a queue file
+   (`~/.irssi-wezterm-img.queue` by default; change with
+   `wezterm_img_queue_file`). The remote host needs **only irssi + this
+   `wezterm_img.pl`** — no imagemagick, no wezterm.
+
+2. **On your Mac**, in a local WezTerm pane, run the watcher:
+
+   ```sh
+   ~/github/irssi-wezterm-images/watch_remote.sh <ssh-target> [remote-queue-path]
+   ```
+
+   where `<ssh-target>` is anything `ssh` accepts (ideally a `~/.ssh/config`
+   Host alias so user/port/key are handled). It streams the remote queue over a
+   plain SSH connection (auto-reconnecting) and renders each URL into a local
+   WezTerm side pane — all download + ImageMagick + wezterm work happens
+   locally. Keep using mosh for the irssi session itself.
+
+   Style is controlled by env vars (defaults match the medium look):
+   `WZT_WIDTH WZT_COLORIZE WZT_SAT WZT_PIX WZT_MAXMB WZT_PANE_PERCENT`, plus
+   `WZT_SSH_OPTS` for extra ssh flags.
+
+`mode=local` forces local rendering even without `$WEZTERM_PANE`; `mode=off`
+disables entirely. The load banner prints the resolved mode so you can tell at
+a glance what it will do.
 
 ## Files
 
 - `wezterm_img.pl` — the irssi script (signal hooks, settings, pane management).
 - `render_image.sh` — download + ImageMagick transform + deliver to the pane.
 - `viewer.sh` — runs inside the side pane; renders thumbnails and links.
+- `watch_remote.sh` — local bridge for remote irssi; streams the remote queue
+  over SSH and renders previews in a local WezTerm pane.
 
 ## License
 
