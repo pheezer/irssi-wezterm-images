@@ -74,6 +74,12 @@ ensure_pane() {
   return 0
 }
 
+# Close our preview pane when the watcher exits (e.g. the thehoppening alias
+# kills us when the mosh session ends).
+cleanup() { [ -n "${PANE:-}" ] && wezterm cli kill-pane --pane-id "$PANE" >/dev/null 2>&1; }
+trap 'cleanup; exit 0' INT TERM
+trap cleanup EXIT
+
 echo "watching $target:$remote_queue → local WezTerm pane (Ctrl-C to stop)"
 ensure_pane || exit 1
 
