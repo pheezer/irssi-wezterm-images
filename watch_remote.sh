@@ -81,7 +81,8 @@ trap 'cleanup; exit 0' INT TERM
 trap cleanup EXIT
 
 echo "watching $target:$remote_queue → local WezTerm pane (Ctrl-C to stop)"
-ensure_pane || exit 1
+# Pane is created lazily on the first image (the per-URL loop calls ensure_pane),
+# so launching this from a shell alias doesn't pop a blank pane every session.
 
 # -n0: only new lines; -F: follow across truncation/recreation (plugin may be
 # reloaded). stderr silenced so the "waiting for file" notice isn't noise.
