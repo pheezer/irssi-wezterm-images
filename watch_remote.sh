@@ -94,7 +94,7 @@ while true; do
     ensure_pane || continue
     bash "$render" "$url" "$PANE" "$width" "$colorize" "$sat" "$pix" "$maxmb" \
       || echo "warn: render failed for $url" >&2
-  done < <(ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  done < <(ssh -n -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
                -o ConnectTimeout=10 ${WZT_SSH_OPTS:-} "$target" "$remote_cmd")
   echo "ssh stream ended; reconnecting in 3s…" >&2
   sleep 3
