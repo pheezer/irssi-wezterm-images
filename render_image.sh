@@ -13,10 +13,7 @@ sat=${5:-55}
 pix=${6:-20}
 maxmb=${7:-10}
 
-# clamp pixelate so the inverse upscale is well defined (avoids div-by-zero)
-[ "$pix" -ge 1 ] 2>/dev/null || pix=20
-[ "$pix" -le 100 ] 2>/dev/null || pix=100
-up=$(( 10000 / pix ))        # inverse of pix%, e.g. 20 -> 500(%)
+source "$(dirname "$0")/thumb_lib.sh"
 
 dir="${TMPDIR:-/tmp}/irssi-wezterm-img"
 mkdir -p "$dir"
@@ -31,13 +28,7 @@ if [ ! -f "$out" ]; then
        -A 'Mozilla/5.0' -o "$src" "$url" || exit 0
   [ -s "$src" ] || exit 0
 
-  # order matters: shrink -> pixelate (nearest-neighbour down then up) -> fade last.
-  # [0] takes the first frame so animated GIFs produce a single still.
-  magick "${src}[0]" \
-         -resize '300x300>' \
-         -filter point -scale "${pix}%" -scale "${up}%" \
-         -modulate "100,${sat}" -fill white -colorize "${colorize}%" \
-         "$out" || exit 0
+  make_thumb "$src" "$out" "$width" "$colorize" "$sat" "$pix" || exit 0
   rm -f "$src"
 fi
 

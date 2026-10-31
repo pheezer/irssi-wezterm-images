@@ -12,11 +12,11 @@ my $SCRIPT_DIR = eval {
     File::Basename::dirname(Cwd::abs_path(__FILE__));
 } || "$ENV{HOME}/github/irssi-wezterm-images";
 
-our $VERSION = '0.2';
+our $VERSION = '0.3';
 our %IRSSI = (
     authors     => 'pduvall',
     name        => 'wezterm_img',
-    description => 'Show small/faded/pixelated previews of image URLs in a dedicated WezTerm side pane.',
+    description => 'Show small/faded/pixelated previews of image URLs and webpage screenshots in a dedicated WezTerm side pane.',
     license     => 'MIT',
 );
 
@@ -24,8 +24,9 @@ our %IRSSI = (
 # Settings (medium-style defaults). Change live with /set <name> <value>.
 # ---------------------------------------------------------------------------
 Irssi::settings_add_bool('wezterm_img', 'wezterm_img_enabled',     1);
+Irssi::settings_add_bool('wezterm_img', 'wezterm_img_sites',       1);
 Irssi::settings_add_int ('wezterm_img', 'wezterm_img_width_cells', 20);
-Irssi::settings_add_int ('wezterm_img', 'wezterm_img_pane_percent',35);
+Irssi::settings_add_int ('wezterm_img', 'wezterm_img_pane_buffer', 3);
 Irssi::settings_add_int ('wezterm_img', 'wezterm_img_colorize_pct',20);
 Irssi::settings_add_int ('wezterm_img', 'wezterm_img_saturation',  55);
 Irssi::settings_add_int ('wezterm_img', 'wezterm_img_pixel_pct',   20);
@@ -71,6 +72,19 @@ sub extract_image_urls {
     return @urls;
 }
 
+# All http(s) URLs that are NOT direct images (those go through the image path).
+sub extract_page_urls {
+    my ($msg) = @_;
+    my @urls;
+    while ($msg =~ m{(https?://[^\s<>"']+)}gi) {
+        my $u = $1;
+        $u =~ s/[.,;:!?)\]}>'"]+$//;              # strip trailing punctuation
+        next if $u =~ m{\.(?:png|jpe?g|gif|webp)(?:[?\#]|$)}i;  # image → other path
+        push @urls, $u;
+    }
+    return @urls;
+}
+
 # Resolve effective mode. 'auto' => 'local' inside WezTerm, else 'inactive'.
 sub effective_mode {
     my $m = lc(Irssi::settings_get_str('wezterm_img_mode') || 'auto');
@@ -85,12 +99,13 @@ sub queue_file {
     return $f;
 }
 
-# remote mode: append the URL as a line; a local watcher renders it.
-sub enqueue_url {
-    my ($url) = @_;
+# remote mode: append a "TYPE\tURL" line; a local watcher renders/dispatches it.
+# TYPE is img | site | close. (A bare URL with no tab is treated as img.)
+sub enqueue_item {
+    my ($type, $url) = @_;
     my $f = queue_file();
     if (open my $fh, '>>', $f) {
-        print $fh $url, "\n";
+        print $fh "$type\t$url\n";
         close $fh;
     }
 }
@@ -115,8 +130,9 @@ sub pane_alive {
 # Ensure the dedicated side pane exists; (re)spawn it if needed. Returns id or undef.
 sub ensure_viewer {
     my $helper  = Irssi::settings_get_str('wezterm_img_helper_dir');
-    my $percent = Irssi::settings_get_int('wezterm_img_pane_percent') || 35;
     my $width   = Irssi::settings_get_int('wezterm_img_width_cells')  || 20;
+    my $buffer  = Irssi::settings_get_int('wezterm_img_pane_buffer');
+    my $cells   = $width + $buffer;
 
     # keep the cached pane if it's present (1) or we can't tell (-1); only a
     # definite 0 means it's gone.
@@ -132,7 +148,7 @@ sub ensure_viewer {
     my $self = $ENV{WEZTERM_PANE};
     return undef unless defined $self;
 
-    my $id = `wezterm cli split-pane --right --percent $percent --pane-id $self -- bash "$helper/viewer.sh" $width 2>/dev/null`;
+    my $id = `wezterm cli split-pane --right --cells $cells --pane-id $self -- bash "$helper/viewer.sh" $width 2>/dev/null`;
     chomp $id if defined $id;
     return undef unless defined $id && $id =~ /^\d+$/;
 
@@ -143,21 +159,24 @@ sub ensure_viewer {
     return $VIEWER_PANE;
 }
 
-# fork the slow download+convert so irssi's event loop never blocks.
+# fork the slow download/screenshot+convert so irssi's event loop never blocks.
+# $kind is 'img' (default) or 'site'.
 sub spawn_worker {
-    my ($url, $pane) = @_;
+    my ($url, $pane, $kind) = @_;
+    $kind ||= 'img';
     my $helper   = Irssi::settings_get_str('wezterm_img_helper_dir');
     my $width    = Irssi::settings_get_int('wezterm_img_width_cells')  || 20;
     my $colorize = Irssi::settings_get_int('wezterm_img_colorize_pct');
     my $sat      = Irssi::settings_get_int('wezterm_img_saturation');
     my $pix      = Irssi::settings_get_int('wezterm_img_pixel_pct')    || 20;
     my $maxmb    = Irssi::settings_get_int('wezterm_img_max_mb')       || 10;
+    my $script   = $kind eq 'site' ? 'render_site.sh' : 'render_image.sh';
 
     my $pid = fork();
     return unless defined $pid;
     if ($pid == 0) {
         # child; exec only returns if it failed to launch
-        exec('bash', "$helper/render_image.sh",
+        exec('bash', "$helper/$script",
              $url, $pane, $width, $colorize, $sat, $pix, $maxmb)
             or POSIX::_exit(1);
     }
@@ -181,21 +200,27 @@ sub handle_text {
     my $mode = effective_mode();
     return if $mode eq 'off' || $mode eq 'inactive';
     return unless target_allowed($target);
-    my @urls = extract_image_urls($msg) or return;
+
+    # [kind => url] pairs, images first.
+    my @items = map { ['img', $_] } extract_image_urls($msg);
+    if (Irssi::settings_get_bool('wezterm_img_sites')) {
+        push @items, map { ['site', $_] } extract_page_urls($msg);
+    }
+    return unless @items;
 
     if ($mode eq 'remote') {
-        for my $url (@urls) {
-            next if seen_recently($url);
-            enqueue_url($url);
+        for my $it (@items) {
+            next if seen_recently($it->[1]);
+            enqueue_item($it->[0], $it->[1]);
         }
         return;
     }
 
     # local
     my $pane = ensure_viewer() or return;
-    for my $url (@urls) {
-        next if seen_recently($url);
-        spawn_worker($url, $pane);
+    for my $it (@items) {
+        next if seen_recently($it->[1]);
+        spawn_worker($it->[1], $pane, $it->[0]);
     }
 }
 
@@ -209,12 +234,12 @@ sub on_private {
     handle_text($msg, $nick);
 }
 
-# /wezterm_img_test <url>  — inject a URL as if it were received
+# /wezterm_img_test <url>  — inject an image or webpage URL as if received
 sub cmd_test {
     my ($data, $server, $witem) = @_;
     $data =~ s/^\s+|\s+$//g;
     if ($data eq '') {
-        Irssi::print('usage: /wezterm_img_test <image-url>');
+        Irssi::print('usage: /wezterm_img_test <image-or-webpage-url>');
         return;
     }
     # bypass dedupe + channel filter for manual testing
@@ -229,22 +254,42 @@ sub cmd_test {
     Irssi::print("wezterm_img: $data ($where)");
 }
 
+# /wezterm_img_close — dismiss the side pane.
+sub cmd_close {
+    my $mode = effective_mode();
+    if ($mode eq 'remote') {
+        enqueue_item('close', '-');
+        Irssi::print('wezterm_img: close requested (remote watcher will dismiss the pane)');
+        return;
+    }
+    if (defined $VIEWER_PANE) {
+        system("wezterm cli kill-pane --pane-id $VIEWER_PANE >/dev/null 2>&1");
+    }
+    $VIEWER_PANE = undef;
+    unlink(state_dir() . '/pane');
+    Irssi::print('wezterm_img: preview pane closed');
+}
+
 # make sure the state dir exists at load time
 mkdir(state_dir()) unless -d state_dir();
 
 Irssi::signal_add('message public',  \&on_public);
 Irssi::signal_add('message private', \&on_private);
-Irssi::command_bind('wezterm_img_test', \&cmd_test);
+Irssi::command_bind('wezterm_img_test',  \&cmd_test);
+Irssi::command_bind('wezterm_img_close', \&cmd_close);
 
 {
     my $mode = effective_mode();
     my %msg = (
         local    => '%Gmode=local%n — rendering previews in a WezTerm side pane.',
-        remote   => '%Gmode=remote%n — queueing image URLs to ' . queue_file()
+        remote   => '%Gmode=remote%n — queueing previews to ' . queue_file()
                     . ' for a local watcher.',
         inactive => '%Ymode=auto%n — not inside WezTerm. If irssi is remote (ssh/mosh), '
                     . 'use %_/set wezterm_img_mode remote%_ and run watch_remote.sh locally.',
         off      => '%Kmode=off%n — disabled.',
     );
+    my $sites = Irssi::settings_get_bool('wezterm_img_sites') ? 'on' : 'off';
     Irssi::print("%G>>%n wezterm_img $VERSION loaded. " . ($msg{$mode} || ''));
+    Irssi::print("%G>>%n webpage previews %_$sites%_ (/set wezterm_img_sites); "
+               . '/wezterm_img_close dismisses the pane.');
 }

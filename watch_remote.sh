@@ -4,9 +4,12 @@
 #
 # Run this ON YOUR MAC, inside WezTerm, where the remote irssi has
 # `/set wezterm_img_mode remote`. It streams the remote queue file over plain
-# SSH and renders each image URL into a local WezTerm side pane. All download
-# + ImageMagick + wezterm work happens locally, so the remote host needs only
-# irssi + this project's wezterm_img.pl (no imagemagick/wezterm required there).
+# SSH and renders each item into a local WezTerm side pane. All download /
+# screenshot + ImageMagick + wezterm work happens locally, so the remote host
+# needs only irssi + this project's wezterm_img.pl.
+#
+# Each queue line is "TYPE<TAB>URL" where TYPE is img | site | close.
+# A bare line with no tab is treated as img (back-compat).
 #
 # Usage:
 #   watch_remote.sh <ssh-target> [remote-queue-path]
@@ -19,7 +22,7 @@
 #
 # Style (match or tweak the look) via env vars:
 #   WZT_WIDTH=20 WZT_COLORIZE=20 WZT_SAT=55 WZT_PIX=20 WZT_MAXMB=10
-#   WZT_PANE_PERCENT=35
+#   WZT_PANE_BUFFER=3   (pane width = WZT_WIDTH + WZT_PANE_BUFFER cells)
 set -uo pipefail
 
 target=${1:-}
@@ -35,7 +38,8 @@ if [ -z "${WEZTERM_PANE:-}" ]; then
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
-render="$here/render_image.sh"
+render_img="$here/render_image.sh"
+render_site="$here/render_site.sh"
 viewer="$here/viewer.sh"
 
 width=${WZT_WIDTH:-20}
@@ -43,7 +47,8 @@ colorize=${WZT_COLORIZE:-20}
 sat=${WZT_SAT:-55}
 pix=${WZT_PIX:-20}
 maxmb=${WZT_MAXMB:-10}
-percent=${WZT_PANE_PERCENT:-35}
+buffer=${WZT_PANE_BUFFER:-3}
+cells=$(( width + buffer ))
 
 host_pane=$WEZTERM_PANE
 PANE=""
@@ -66,7 +71,7 @@ ensure_pane() {
     0) return 0 ;;   # alive
     2) return 0 ;;   # unknown — keep the pane we have rather than respawn
   esac               # 1 => really gone, fall through and (re)spawn
-  PANE=$(wezterm cli split-pane --right --percent "$percent" \
+  PANE=$(wezterm cli split-pane --right --cells "$cells" \
            --pane-id "$host_pane" -- bash "$viewer" "$width" 2>/dev/null)
   PANE=${PANE//[^0-9]/}
   [ -n "$PANE" ] || { echo "warn: could not spawn viewer pane" >&2; return 1; }
@@ -88,9 +93,21 @@ echo "watching $target:$remote_queue → local WezTerm pane (Ctrl-C to stop)"
 # reloaded). stderr silenced so the "waiting for file" notice isn't noise.
 remote_cmd="tail -n0 -F \"$remote_queue\" 2>/dev/null"
 
+close_pane() {
+  [ -n "$PANE" ] && wezterm cli kill-pane --pane-id "$PANE" >/dev/null 2>&1
+  PANE=""
+}
+
 while true; do
-  while IFS= read -r url; do
+  while IFS=$'\t' read -r type url; do
+    # A bare line (no tab) parses as type=<url>, url=empty → treat as img.
+    if [ -z "$url" ]; then url=$type; type=img; fi
     [ -n "$url" ] || continue
+    case "$type" in
+      close) close_pane; continue ;;
+      site)  render=$render_site ;;
+      *)     render=$render_img ;;
+    esac
     ensure_pane || continue
     bash "$render" "$url" "$PANE" "$width" "$colorize" "$sat" "$pix" "$maxmb" \
       || echo "warn: render failed for $url" >&2
