@@ -12,11 +12,11 @@ my $SCRIPT_DIR = eval {
     File::Basename::dirname(Cwd::abs_path(__FILE__));
 } || "$ENV{HOME}/github/irssi-wezterm-images";
 
-our $VERSION = '0.3';
+our $VERSION = '0.4';
 our %IRSSI = (
     authors     => 'pduvall',
     name        => 'wezterm_img',
-    description => 'Show small/faded/pixelated previews of image URLs and webpage screenshots in a dedicated WezTerm side pane.',
+    description => 'Show small/faded/pixelated previews of images and webpage links (embedded image or screenshot) in a dedicated WezTerm side pane.',
     license     => 'MIT',
 );
 

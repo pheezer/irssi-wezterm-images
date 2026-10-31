@@ -4,7 +4,8 @@ An [irssi](https://irssi.org/) script that automatically previews links posted
 in IRC as **small, pixelated, slightly-faded** thumbnails in a dedicated
 [WezTerm](https://wezfurlong.org/wezterm/) side pane, each with a clickable link
 to open the original. Image URLs are downloaded directly; non-image webpage
-links are rendered to a screenshot (via [shot-scraper](https://shot-scraper.datasette.io/)).
+links preview as their embedded image when they have one (e.g. image hosts),
+otherwise as a screenshot (via [shot-scraper](https://shot-scraper.datasette.io/)).
 
 ```
 ┌─────────────┬────────────┐
@@ -84,7 +85,7 @@ ln -sf ../wezterm_img.pl ~/.irssi/scripts/autorun/wezterm_img.pl
 Then launch `irssi` inside WezTerm. You should see:
 
 ```
->> wezterm_img 0.3 loaded. mode=local — rendering previews in a WezTerm side pane.
+>> wezterm_img 0.4 loaded. mode=local — rendering previews in a WezTerm side pane.
 >> webpage previews on (/set wezterm_img_sites); /wezterm_img_close dismisses the pane.
 ```
 
@@ -93,10 +94,12 @@ To load without restarting: `/script load wezterm_img.pl`
 ## Usage
 
 Just chat. When someone posts an **image URL** (`.png .jpg .jpeg .gif .webp`)
-the side pane appears (on the first link) and the thumbnail renders. When
-someone posts a **webpage link**, it's screenshotted and thumbnailed the same
-way. `Cmd`-click the `⤢ open original` link to open the original in your
-browser. The pane is sized to the thumbnail width plus a small buffer.
+the side pane appears (on the first link) and the thumbnail renders. A
+**webpage link** that embeds a dominant image — image hosts and pastebins whose
+page is really just one picture, or any page with an `og:image` — previews as
+**that image**; anything else is screenshotted. Either way, `Cmd`-click the
+`⤢ open original` link to open the original page in your browser. The pane is
+sized to the thumbnail width plus a small buffer.
 
 Commands:
 
@@ -173,7 +176,8 @@ a glance what it will do.
 
 - `wezterm_img.pl` — the irssi script (signal hooks, settings, pane management).
 - `render_image.sh` — download an image + thumbnail + deliver to the pane.
-- `render_site.sh` — screenshot a webpage (shot-scraper) + thumbnail + deliver.
+- `render_site.sh` — resolve a link's embedded image (og:image / `<img>`) and
+  render that, or screenshot the page (shot-scraper) as a fallback.
 - `thumb_lib.sh` — shared `make_thumb` step (resize → pixelate → fade).
 - `viewer.sh` — runs inside the side pane; renders thumbnails and links.
 - `watch_remote.sh` — local bridge for remote irssi; streams the remote queue

@@ -15,23 +15,4 @@ maxmb=${7:-10}
 
 source "$(dirname "$0")/thumb_lib.sh"
 
-dir="${TMPDIR:-/tmp}/irssi-wezterm-img"
-mkdir -p "$dir"
-key=$(printf '%s' "$url" | md5)      # macOS: stdin md5 prints just the hash
-src="$dir/$key.src"
-out="$dir/$key.png"
-
-# Reuse an already-rendered thumb (cheap dedupe across restarts).
-if [ ! -f "$out" ]; then
-  curl -sL --max-time 30 --connect-timeout 10 \
-       --max-filesize $((maxmb * 1024 * 1024)) \
-       -A 'Mozilla/5.0' -o "$src" "$url" || exit 0
-  [ -s "$src" ] || exit 0
-
-  make_thumb "$src" "$out" "$width" "$colorize" "$sat" "$pix" || exit 0
-  rm -f "$src"
-fi
-
-[ -s "$out" ] || exit 0
-printf '%s\t%s\t%s\n' "$out" "$url" "$width" \
-  | wezterm cli send-text --no-paste --pane-id "$pane"
+fetch_and_thumb "$url" "$url" "$pane" "$width" "$colorize" "$sat" "$pix" "$maxmb" || exit 0
